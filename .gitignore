@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# App data
+backend/uploads/
+backend/outputs/
+backend/.port
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Demucs cache (models will be re-downloaded)
+# ~/.cache/torch/hub/  (lives outside project, fine)

@@ -1,0 +1,17 @@
+# PyTorch CPU wheels are only on the PyTorch index, not PyPI — this line is required
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Core API
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Audio AI - pinned to 2.5.0 (soundfile backend, no FFmpeg needed)
+torch==2.5.0+cpu
+torchaudio==2.5.0+cpu
+
+# Vocal separation model (Meta AI)
+demucs==4.0.1
+
+# Audio I/O
+soundfile
