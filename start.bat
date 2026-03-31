@@ -22,14 +22,20 @@ if not exist "backend\venv\Scripts\python.exe" (
 :: ── 2. Activate venv ─────────────────────────────────────────────────────────
 call backend\venv\Scripts\activate.bat
 
-:: ── 3. Install / verify backend deps (errors now visible) ────────────────────
+:: ── 3. Install backend deps only if demucs is missing ────────────────────────
 echo [2/4] Checking backend dependencies...
-pip install -q -r backend\requirements.txt
+pip show demucs >nul 2>&1
 if errorlevel 1 (
-    echo.
-    echo WARNING: Some packages failed to install.
-    echo If uploads fail, close this window and run install.bat to reinstall.
-    echo.
+    echo   Packages missing — installing now...
+    pip install -q -r backend\requirements.txt
+    if errorlevel 1 (
+        echo.
+        echo WARNING: Some packages failed to install.
+        echo Run install.bat for a clean full setup.
+        echo.
+    )
+) else (
+    echo   All packages already installed.
 )
 
 :: ── 4. Install frontend deps if needed ───────────────────────────────────────

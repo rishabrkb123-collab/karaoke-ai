@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
 import axios from "axios";
 import {
@@ -15,8 +15,6 @@ import {
 } from "lucide-react";
 
 const API_BASE = "/api";
-const POLL_INTERVAL = 3000;
-
 const ALLOWED_EXT = [".mp3", ".wav", ".flac", ".ogg", ".aac", ".m4a", ".wma", ".opus"];
 
 function formatSize(bytes) {
@@ -41,9 +39,22 @@ function WaveformAnimation() {
 
 function AudioPlayer({ src, filename }) {
   const audioRef = useRef(null);
+  const lastUpdateRef = useRef(0);      // throttle timestamp
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  // Pause and release the audio source when this component unmounts (user
+  // clicks "New Song"). Without this the browser keeps the audio decoder
+  // running and holds the blob in memory until GC.
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      }
+    };
+  }, []);
 
   const toggle = () => {
     if (playing) {
@@ -60,12 +71,23 @@ function AudioPlayer({ src, filename }) {
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
+  // onTimeUpdate fires up to 30× per second — that's 30 re-renders/sec for
+  // just moving a scrubber needle. Throttle to max 10fps using a ref so we
+  // don't create a new closure on every render.
+  const handleTimeUpdate = (e) => {
+    const now = Date.now();
+    if (now - lastUpdateRef.current >= 100) {
+      lastUpdateRef.current = now;
+      setCurrentTime(e.target.currentTime);
+    }
+  };
+
   return (
     <div className="glass rounded-2xl p-4 flex flex-col gap-3">
       <audio
         ref={audioRef}
         src={src}
-        onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
+        onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={(e) => setDuration(e.target.duration)}
         onEnded={() => setPlaying(false)}
       />
@@ -106,13 +128,24 @@ function AudioPlayer({ src, filename }) {
 export default function App() {
   const [file, setFile] = useState(null);
   const [jobId, setJobId] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle | uploading | processing | done | error
+  const [status, setStatus] = useState("idle"); // idle|uploading|processing|done|error
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
   const [downloadFilename, setDownloadFilename] = useState("");
   const [downloadUrl, setDownloadUrl] = useState(null);
   const [device, setDevice] = useState(null);
-  const pollRef = useRef(null);
+  const [queuePosition, setQueuePosition] = useState(null);
+  const pollRef = useRef(null);        // holds the current setTimeout id
+  const downloadUrlRef = useRef(null); // mirror for beforeunload (closure-safe)
+
+  // Release blob URL if the user closes the tab without clicking "New Song"
+  useEffect(() => {
+    const handleUnload = () => {
+      if (downloadUrlRef.current) URL.revokeObjectURL(downloadUrlRef.current);
+    };
+    window.addEventListener("beforeunload", handleUnload);
+    return () => window.removeEventListener("beforeunload", handleUnload);
+  }, []);
 
   const reset = () => {
     setFile(null);
@@ -122,46 +155,60 @@ export default function App() {
     setProgress(0);
     setDownloadFilename("");
     setDevice(null);
+    setQueuePosition(null);
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    downloadUrlRef.current = null;
     setDownloadUrl(null);
-    if (pollRef.current) clearInterval(pollRef.current);
+    if (pollRef.current) clearTimeout(pollRef.current); // setTimeout, not setInterval
   };
 
   const startPolling = useCallback((id) => {
-    pollRef.current = setInterval(async () => {
+    // Adaptive polling: 1s for the first 30s (job might start quickly on GPU
+    // or be short), then backs off to 3s to reduce server chatter on long
+    // CPU runs. Uses setTimeout instead of setInterval so the interval can
+    // change between calls and so we never have two polls in-flight at once.
+    const pollStart = Date.now();
+
+    const tick = async () => {
       try {
         const res = await axios.get(`${API_BASE}/status/${id}`);
         const data = res.data;
 
         if (data.device) setDevice(data.device);
+        if (data.queue_position != null) {
+          setQueuePosition(data.queue_position);
+        } else {
+          setQueuePosition(null);
+        }
 
         if (data.status === "done") {
-          clearInterval(pollRef.current);
           setDownloadFilename(data.filename || "karaoke.wav");
-
-          // Fetch the file as blob for preview + download
           const fileRes = await axios.get(`${API_BASE}/download/${id}`, {
             responseType: "blob",
           });
           const blob = new Blob([fileRes.data], { type: "audio/wav" });
           const url = URL.createObjectURL(blob);
+          downloadUrlRef.current = url;
           setDownloadUrl(url);
           setStatus("done");
         } else if (data.status === "error") {
-          clearInterval(pollRef.current);
           setError(data.error || "An unknown error occurred during processing.");
           setStatus("error");
         } else {
-          // Still processing — animate progress
           setProgress((p) => Math.min(p + 3, 90));
+          const elapsed = Date.now() - pollStart;
+          const nextInterval = elapsed < 30_000 ? 1000 : 3000;
+          pollRef.current = setTimeout(tick, nextInterval);
         }
       } catch (err) {
-        clearInterval(pollRef.current);
-        const msg = err?.response?.data?.detail || "Lost connection to server. Please try again.";
+        const msg =
+          err?.response?.data?.detail || "Lost connection to server. Please try again.";
         setError(msg);
         setStatus("error");
       }
-    }, POLL_INTERVAL);
+    };
+
+    pollRef.current = setTimeout(tick, 1000);
   }, []);
 
   const processFile = useCallback(async (selectedFile) => {
@@ -252,7 +299,6 @@ export default function App() {
           </p>
         </div>
 
-        {/* Upload / Processing / Result Card */}
         <div className="w-full max-w-2xl space-y-5">
 
           {/* Dropzone */}
@@ -307,15 +353,29 @@ export default function App() {
             <div className="glass rounded-3xl p-10 flex flex-col items-center gap-5">
               <WaveformAnimation />
               <div className="text-center">
-                <p className="font-semibold text-xl">Removing Vocals...</p>
-                <p className="text-gray-400 text-sm mt-2">
-                  AI is separating your vocals from the instrumental track.
-                </p>
-                <p className="text-gray-500 text-xs mt-1">
-                  {device === "cuda"
-                    ? "GPU detected — under 1 min with high-quality mode (shifts=2)."
-                    : "CPU mode — typically 5–10 min for a 4-minute song."}
-                </p>
+                {queuePosition != null ? (
+                  <>
+                    <p className="font-semibold text-xl">Queued</p>
+                    <p className="text-yellow-400 text-sm mt-2">
+                      Position {queuePosition} in queue — another song is processing.
+                    </p>
+                    <p className="text-gray-500 text-xs mt-1">
+                      Your job will start automatically when the current one finishes.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold text-xl">Removing Vocals...</p>
+                    <p className="text-gray-400 text-sm mt-2">
+                      AI is separating your vocals from the instrumental track.
+                    </p>
+                    <p className="text-gray-500 text-xs mt-1">
+                      {device === "cuda"
+                        ? "GPU detected — under 1 min with high-quality mode (shifts=2)."
+                        : "CPU mode — typically 5–10 min for a 4-minute song."}
+                    </p>
+                  </>
+                )}
               </div>
               <div className="w-full bg-white/10 rounded-full h-2">
                 <div
@@ -343,7 +403,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Audio Preview */}
               {downloadUrl && (
                 <AudioPlayer src={downloadUrl} filename={downloadFilename} />
               )}
